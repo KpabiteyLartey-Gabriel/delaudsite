@@ -16,12 +16,22 @@ import {
 } from "@/components/ui/dialog"
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import ResponsiveCalendar from "@/components/ui/ResponsiveCalendar"
-import { Search, Calendar, Phone, Mail, Leaf, Eye, Users, FileText, CalendarDays, Plus } from "lucide-react"
+import { Search, Calendar, Phone, Mail, Eye, EyeOff, Users, FileText, CalendarDays, Plus, Shield, LogOut } from "lucide-react"
 import { format } from "date-fns"
 import { useRouter } from "next/navigation"
 import { useToast } from "@/hooks/use-toast"
+import {
+  ADMIN_INFO_STORAGE_KEY,
+  ADMIN_TOKEN_STORAGE_KEY,
+  getErrorMessage,
+  getNextPasswordInputType,
+  isUnauthorizedError,
+  PasswordInputType,
+  updateAdminPassword,
+} from "@/lib/admin-auth"
 
 interface PatientSubmission {
+  _id?: string
   id: string
   fullName: string
   dateOfBirth: Date | undefined
@@ -53,7 +63,7 @@ interface PatientSubmission {
   notes: string
 }
 
-const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api"
 
 export default function DoctorDashboard() {
   const router = useRouter();
@@ -78,24 +88,51 @@ export default function DoctorDashboard() {
   const [appointmentDate, setAppointmentDate] = useState("")
   const [appointmentTime, setAppointmentTime] = useState("")
   const [notes, setNotes] = useState("")
-  const [copied, setCopied] = useState(false);
+  const [copied, setCopied] = useState(false)
+  const [adminEmail, setAdminEmail] = useState("")
+  const [passwordLoading, setPasswordLoading] = useState(false)
+  const [currentPassword, setCurrentPassword] = useState("")
+  const [newPassword, setNewPassword] = useState("")
+  const [confirmNewPassword, setConfirmNewPassword] = useState("")
+  const [currentPasswordType, setCurrentPasswordType] = useState<PasswordInputType>("password")
+  const [newPasswordType, setNewPasswordType] = useState<PasswordInputType>("password")
+  const [confirmPasswordType, setConfirmPasswordType] = useState<PasswordInputType>("password")
+
+  const handleUnauthorized = () => {
+    localStorage.removeItem(ADMIN_TOKEN_STORAGE_KEY)
+    localStorage.removeItem(ADMIN_INFO_STORAGE_KEY)
+    router.replace("/admin-login")
+  }
 
   useEffect(() => {
     setMounted(true);
   }, []);
 
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(ADMIN_INFO_STORAGE_KEY)
+      if (!raw) return
+      const parsed = JSON.parse(raw) as { email?: string }
+      if (parsed.email) {
+        setAdminEmail(parsed.email)
+      }
+    } catch {
+      setAdminEmail("")
+    }
+  }, [])
+
   // Check for token on mount
   useEffect(() => {
-    const token = localStorage.getItem("adminToken");
+    const token = localStorage.getItem(ADMIN_TOKEN_STORAGE_KEY)
     if (!token) {
-      router.replace("/admin-login");
+      router.replace("/admin-login")
     }
   }, [router]);
 
   useEffect(() => {
     // Load submissions from backend
     const fetchPatients = async () => {
-      const token = localStorage.getItem("adminToken");
+      const token = localStorage.getItem(ADMIN_TOKEN_STORAGE_KEY)
       if (!token) return;
       try {
         const res = await fetch(`${API_URL}/patients`, {
@@ -104,8 +141,7 @@ export default function DoctorDashboard() {
           },
         });
         if (res.status === 401) {
-          localStorage.removeItem("adminToken");
-          router.replace("/admin-login");
+          handleUnauthorized()
           return;
         }
         if (!res.ok) throw new Error("Failed to fetch patients");
@@ -161,7 +197,7 @@ export default function DoctorDashboard() {
   }, [searchTerm, filteredSubmissions, toast]);
 
   const updatePatient = async (id: string, updates: Partial<PatientSubmission>) => {
-    const token = localStorage.getItem("adminToken");
+    const token = localStorage.getItem(ADMIN_TOKEN_STORAGE_KEY)
     if (!token) return;
     try {
       toast({
@@ -178,8 +214,7 @@ export default function DoctorDashboard() {
         body: JSON.stringify(updates),
       });
       if (res.status === 401) {
-        localStorage.removeItem("adminToken");
-        router.replace("/admin-login");
+        handleUnauthorized()
         return;
       }
       if (!res.ok) {
@@ -239,6 +274,100 @@ export default function DoctorDashboard() {
     }
   }
 
+  const handleLogout = () => {
+    localStorage.removeItem(ADMIN_TOKEN_STORAGE_KEY)
+    localStorage.removeItem(ADMIN_INFO_STORAGE_KEY)
+    toast({
+      title: "👋 Logged Out",
+      description: "You have been signed out successfully.",
+    })
+    router.replace("/admin-login")
+  }
+
+  const handlePasswordUpdate = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+
+    if (!currentPassword || !newPassword) {
+      toast({
+        title: "⚠️ Missing fields",
+        description: "Current password and new password are required.",
+        variant: "destructive",
+      })
+      return
+    }
+
+    if (newPassword.length < 8) {
+      toast({
+        title: "⚠️ Weak password",
+        description: "New password must be at least 8 characters.",
+        variant: "destructive",
+      })
+      return
+    }
+
+    if (currentPassword === newPassword) {
+      toast({
+        title: "⚠️ Invalid new password",
+        description: "New password must be different from current password.",
+        variant: "destructive",
+      })
+      return
+    }
+
+    if (confirmNewPassword && confirmNewPassword !== newPassword) {
+      toast({
+        title: "⚠️ Password mismatch",
+        description: "Confirm new password must match the new password.",
+        variant: "destructive",
+      })
+      return
+    }
+
+    const token = localStorage.getItem(ADMIN_TOKEN_STORAGE_KEY)
+    if (!token) {
+      handleUnauthorized()
+      return
+    }
+
+    try {
+      setPasswordLoading(true)
+      const passwordPayload = {
+        currentPassword,
+        newPassword,
+        ...(confirmNewPassword ? { confirmNewPassword } : {}),
+      }
+
+      const response = await updateAdminPassword(token, {
+        ...passwordPayload,
+      })
+
+      toast({
+        title: "✅ Password updated",
+        description: response.message || "Password updated successfully.",
+      })
+
+      setCurrentPassword("")
+      setNewPassword("")
+      setConfirmNewPassword("")
+      setCurrentPasswordType("password")
+      setNewPasswordType("password")
+      setConfirmPasswordType("password")
+    } catch (error) {
+      if (isUnauthorizedError(error)) {
+        handleUnauthorized()
+        return
+      }
+
+      toast({
+        title: "❌ Password update failed",
+        description: getErrorMessage(error, "Unable to update password. Please try again."),
+        variant: "destructive",
+      })
+    } finally {
+      setPasswordLoading(false)
+    }
+  }
+
   const getAppointmentsForDate = (date: Date) => {
     return submissions.filter((submission) => {
       if (!submission.appointmentDate) return false
@@ -274,23 +403,30 @@ export default function DoctorDashboard() {
                 <div>
                   {/* <h1 className="text-3xl font-bold text-gray-900">DELAUDS HERBAL HEALTHCARE</h1> */}
                   <p className="text-green-600 font-medium">Welcome, Dr. Doris <span role="img" aria-label="waving hand">👋</span></p>
+                  {adminEmail && <p className="text-xs text-gray-500 mt-1">Signed in as {adminEmail}</p>}
                 </div>
               </div>
-              <div className="flex flex-col items-end">
+              <div className="flex flex-col items-end gap-2">
                 <Button
                   type="button"
                   variant="outline"
                   size="sm"
                   onClick={() => {
                     navigator.clipboard.writeText(window.location.origin + "/");
+                    setCopied(true)
                     toast({
                       title: "📋 Form Link Copied!",
                       description: "The patient form link has been copied to your clipboard.",
                     });
+                    setTimeout(() => setCopied(false), 1500)
                   }}
                   className="text-green-700 border-green-600 hover:bg-green-50 focus:outline-none"
                 >
                   Copy Form Link
+                </Button>
+                <Button type="button" variant="outline" size="sm" onClick={handleLogout}>
+                  <LogOut className="h-4 w-4 mr-2" />
+                  Logout
                 </Button>
                 {copied && <span className="text-green-600 text-xs mt-1">Copied!</span>}
               </div>
@@ -339,9 +475,14 @@ export default function DoctorDashboard() {
                 title: "📅 Calendar Tab",
                 description: "Viewing appointment calendar and scheduled visits.",
               });
+            } else if (value === "security") {
+              toast({
+                title: "🔐 Security Tab",
+                description: "Update your admin password.",
+              })
             }
           }}>
-            <TabsList className="grid w-full grid-cols-2 bg-white shadow-lg">
+            <TabsList className="grid w-full grid-cols-3 bg-white shadow-lg">
               <TabsTrigger
                 value="patients"
                 className="data-[state=active]:bg-green-100 data-[state=active]:text-green-800"
@@ -355,6 +496,13 @@ export default function DoctorDashboard() {
               >
                 <CalendarDays className="h-4 w-4 mr-2" />
                 Calendar
+              </TabsTrigger>
+              <TabsTrigger
+                value="security"
+                className="data-[state=active]:bg-green-100 data-[state=active]:text-green-800"
+              >
+                <Shield className="h-4 w-4 mr-2" />
+                Security
               </TabsTrigger>
             </TabsList>
 
@@ -745,6 +893,103 @@ export default function DoctorDashboard() {
                   </CardContent>
                 </Card>
               </div>
+            </TabsContent>
+
+            {/* Security Tab */}
+            <TabsContent value="security">
+              <Card className="shadow-lg">
+                <CardHeader style={{ backgroundColor: "#22c55e" }} className="text-white">
+                  <CardTitle>Update Admin Password</CardTitle>
+                  <CardDescription className="text-green-100">
+                    Keep your admin account secure by using a strong password.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="p-6">
+                  <form onSubmit={handlePasswordUpdate} className="max-w-xl space-y-4">
+                    <div>
+                      <Label htmlFor="currentPassword">Current Password</Label>
+                      <div className="relative mt-1">
+                        <Input
+                          id="currentPassword"
+                          type={currentPasswordType}
+                          value={currentPassword}
+                          onChange={(e) => setCurrentPassword(e.target.value)}
+                          className="pr-10"
+                          required
+                        />
+                        <button
+                          type="button"
+                          aria-label={currentPasswordType === "password" ? "Show current password" : "Hide current password"}
+                          onClick={() => setCurrentPasswordType(getNextPasswordInputType(currentPasswordType))}
+                          className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-500 hover:text-gray-700"
+                        >
+                          {currentPasswordType === "password" ? (
+                            <Eye className="h-4 w-4" />
+                          ) : (
+                            <EyeOff className="h-4 w-4" />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div>
+                      <Label htmlFor="newPassword">New Password</Label>
+                      <div className="relative mt-1">
+                        <Input
+                          id="newPassword"
+                          type={newPasswordType}
+                          value={newPassword}
+                          onChange={(e) => setNewPassword(e.target.value)}
+                          className="pr-10"
+                          required
+                        />
+                        <button
+                          type="button"
+                          aria-label={newPasswordType === "password" ? "Show new password" : "Hide new password"}
+                          onClick={() => setNewPasswordType(getNextPasswordInputType(newPasswordType))}
+                          className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-500 hover:text-gray-700"
+                        >
+                          {newPasswordType === "password" ? (
+                            <Eye className="h-4 w-4" />
+                          ) : (
+                            <EyeOff className="h-4 w-4" />
+                          )}
+                        </button>
+                      </div>
+                      <p className="mt-1 text-xs text-gray-500">Must be at least 8 characters and different from your current password.</p>
+                    </div>
+
+                    <div>
+                      <Label htmlFor="confirmNewPassword">Confirm New Password</Label>
+                      <div className="relative mt-1">
+                        <Input
+                          id="confirmNewPassword"
+                          type={confirmPasswordType}
+                          value={confirmNewPassword}
+                          onChange={(e) => setConfirmNewPassword(e.target.value)}
+                          className="pr-10"
+                        />
+                        <button
+                          type="button"
+                          aria-label={confirmPasswordType === "password" ? "Show confirm password" : "Hide confirm password"}
+                          onClick={() => setConfirmPasswordType(getNextPasswordInputType(confirmPasswordType))}
+                          className="absolute inset-y-0 right-0 flex items-center pr-3 text-gray-500 hover:text-gray-700"
+                        >
+                          {confirmPasswordType === "password" ? (
+                            <Eye className="h-4 w-4" />
+                          ) : (
+                            <EyeOff className="h-4 w-4" />
+                          )}
+                        </button>
+                      </div>
+                    </div>
+
+                    <Button type="submit" disabled={passwordLoading} className="bg-green-600 hover:bg-green-700">
+                      {passwordLoading ? "Updating password..." : "Update Password"}
+                    </Button>
+                  </form>
+                </CardContent>
+              </Card>
             </TabsContent>
           </Tabs>
         </div>
